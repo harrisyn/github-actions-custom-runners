@@ -1,0 +1,167 @@
+version: '3.8'
+
+services:
+  github-runner:
+    image: ghcr.io/actions/actions-runner:latest
+    restart: unless-stopped
+    environment:
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_REPOSITORY=${GITHUB_REPOSITORY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - RUNNER_NAME_PREFIX=${RUNNER_NAME_PREFIX:-docker-runner}
+      - RUNNER_LABELS=${RUNNER_LABELS:-self-hosted,docker,linux}
+      - RUNNER_WORKDIR=/home/runner/work
+      - RUNNER_GROUP=${RUNNER_GROUP:-default}
+      - DISABLE_AUTO_UPDATE=${DISABLE_AUTO_UPDATE:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner_work:/home/runner/work
+      - runner_cache:/home/runner/.cache
+    networks:
+      - runner-network
+    security_opt:
+      - seccomp:unconfined
+    privileged: false
+    user: "1001:123"  # runner:docker group
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'Runner.Listener' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "com.github.runner.type=actions"
+      - "com.github.runner.owner=${GITHUB_OWNER}"
+
+  # Enhanced runner with additional tools (using our custom image)
+  github-runner-enhanced:
+    build:
+      context: .
+      dockerfile: Dockerfile.enhanced
+      args:
+        BASE_IMAGE: ghcr.io/actions/actions-runner:latest
+    restart: unless-stopped
+    environment:
+      - GITHUB_OWNER=${GITHUB_OWNER}
+      - GITHUB_REPOSITORY=${GITHUB_REPOSITORY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - RUNNER_NAME_PREFIX=${RUNNER_NAME_PREFIX:-enhanced-runner}
+      - RUNNER_LABELS=${RUNNER_LABELS:-self-hosted,docker,linux,enhanced}
+      - RUNNER_WORKDIR=/home/runner/work
+      - RUNNER_GROUP=${RUNNER_GROUP:-default}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - enhanced_work:/home/runner/work
+      - enhanced_cache:/home/runner/.cache
+    networks:
+      - runner-network
+    security_opt:
+      - seccomp:unconfined
+    privileged: false
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    profiles:
+      - enhanced
+
+  # Optional: Registry cache for faster builds
+  registry-cache:
+    image: registry:2
+    container_name: runner-registry-cache
+    restart: unless-stopped
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://registry-1.docker.io
+      REGISTRY_PROXY_USERNAME: ${DOCKER_HUB_USERNAME:-}
+      REGISTRY_PROXY_PASSWORD: ${DOCKER_HUB_PASSWORD:-}
+    volumes:
+      - registry_cache:/var/lib/registry
+    networks:
+      - runner-network
+    ports:
+      - "5000:5000"
+    profiles:
+      - cache
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5000/v2/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring dashboard (optional)
+  portainer:
+    image: portainer/portainer-ce:latest
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - runner-network
+    profiles:
+      - monitoring
+
+volumes:
+  runner_work:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${RUNNER_WORK_DIR:-./runner-work}
+  runner_cache:
+    driver: local
+  enhanced_work:
+    driver: local
+  enhanced_cache:
+    driver: local
+  registry_cache:
+    driver: local
+  portainer_data:
+    driver: local
+
+networks:
+  runner-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# Override for development/testing
+x-runner-template: &runner-template
+  image: ghcr.io/actions/actions-runner:latest
+  restart: unless-stopped
+  environment: &runner-env
+    - GITHUB_OWNER=${GITHUB_OWNER}
+    - GITHUB_REPOSITORY=${GITHUB_REPOSITORY}
+    - GITHUB_TOKEN=${GITHUB_TOKEN}
+    - RUNNER_LABELS=${RUNNER_LABELS:-self-hosted,docker,linux}
+    - RUNNER_WORKDIR=/home/runner/work
+    - RUNNER_GROUP=${RUNNER_GROUP:-default}
+  volumes: &runner-volumes
+    - /var/run/docker.sock:/var/run/docker.sock
+    - runner_work:/home/runner/work
+    - runner_cache:/home/runner/.cache
+  networks:
+    - runner-network
+  security_opt:
+    - seccomp:unconfined
+  privileged: false
