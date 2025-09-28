@@ -90,10 +90,25 @@ Environment Variables (set in .env):
 EOF
 }
 
+# Function to detect and get compose command
+detect_compose_cmd() {
+    if command -v docker-compose &> /dev/null; then
+        echo "docker-compose"
+    elif docker compose version &> /dev/null; then
+        echo "docker compose"
+    else
+        print_error "Docker Compose not found!"
+        echo "Please install Docker Compose:"
+        echo "  - For V1: https://docs.docker.com/compose/install/"
+        echo "  - For V2: Included with Docker Desktop or 'docker compose' plugin"
+        exit 1
+    fi
+}
+
 # Function to get compose command with profiles
 get_compose_cmd() {
     local profiles="$1"
-    local cmd="docker-compose"
+    local cmd=$(detect_compose_cmd)
     
     if [ -n "$profiles" ]; then
         IFS=',' read -ra PROFILE_ARRAY <<< "$profiles"
@@ -134,7 +149,8 @@ start_runners() {
 stop_runners() {
     print_status "Stopping all runners..."
     
-    docker-compose down
+    local compose_cmd=$(detect_compose_cmd)
+    eval "$compose_cmd down"
     
     if [ $? -eq 0 ]; then
         print_success "All runners stopped"
@@ -167,7 +183,8 @@ scale_runners() {
     
     print_status "Scaling to $replicas runners..."
     
-    docker-compose up -d --scale github-runner=$replicas
+    local compose_cmd=$(detect_compose_cmd)
+    eval "$compose_cmd up -d --scale github-runner=$replicas"
     
     if [ $? -eq 0 ]; then
         print_success "Scaled to $replicas runners"
@@ -180,34 +197,41 @@ scale_runners() {
 
 # Function to show status
 show_status() {
+    local compose_cmd=$(detect_compose_cmd)
+    
     print_status "Runner Status:"
     echo
     
     # Docker Compose status
-    docker-compose ps
+    eval "$compose_cmd ps"
     echo
     
     # Resource usage
     print_status "Resource Usage:"
-    docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" \
-        $(docker-compose ps -q) 2>/dev/null || echo "No running containers"
+    local containers=$(eval "$compose_cmd ps -q" 2>/dev/null)
+    if [ -n "$containers" ]; then
+        docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" $containers
+    else
+        echo "No running containers"
+    fi
     echo
     
     # Count active runners
-    local active_runners=$(docker-compose ps -q github-runner 2>/dev/null | wc -l)
+    local active_runners=$(eval "$compose_cmd ps -q github-runner" 2>/dev/null | wc -l)
     print_status "Active Runners: $active_runners"
 }
 
 # Function to show logs
 show_logs() {
     local service=${1:-}
+    local compose_cmd=$(detect_compose_cmd)
     
     if [ -n "$service" ]; then
         print_status "Showing logs for $service..."
-        docker-compose logs -f "$service"
+        eval "$compose_cmd logs -f $service"
     else
         print_status "Showing logs for all services..."
-        docker-compose logs -f
+        eval "$compose_cmd logs -f"
     fi
 }
 
@@ -215,8 +239,10 @@ show_logs() {
 cleanup() {
     print_status "Cleaning up resources..."
     
+    local compose_cmd=$(detect_compose_cmd)
+    
     # Stop and remove containers
-    docker-compose down -v
+    eval "$compose_cmd down -v"
     
     # Remove unused images and volumes
     docker system prune -f
